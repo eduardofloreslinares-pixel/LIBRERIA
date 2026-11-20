@@ -1,0 +1,88 @@
+name: Compilar Carpetas iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar proyecto
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/carpetas-source"
+
+          spec="$(find "$GITHUB_WORKSPACE" -name project.yml -not -path '*/.git/*' | head -n 1)"
+
+          if [ -z "$spec" ]; then
+            package="$(find "$GITHUB_WORKSPACE" -iname 'Carpetas-iOS*.zip' -not -path '*/.git/*' | head -n 1)"
+
+            if [ -z "$package" ]; then
+              echo "Sube Carpetas-iOS.zip al repositorio."
+              exit 1
+            fi
+
+            unzip -q "$package" -d "$RUNNER_TEMP/carpetas-source"
+            spec="$(find "$RUNNER_TEMP/carpetas-source" -name project.yml | head -n 1)"
+          fi
+
+          if [ -z "$spec" ]; then
+            echo "El ZIP no contiene project.yml."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$(dirname "$spec")" >> "$GITHUB_ENV"
+
+      - name: Instalar XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+
+      - name: Generar proyecto
+        run: |
+          cd "$PROJECT_DIR"
+          xcodegen generate
+
+      - name: Compilar
+        run: |
+          cd "$PROJECT_DIR"
+          set -o pipefail
+          xcodebuild \
+            -project Carpetas.xcodeproj \
+            -scheme Carpetas \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Carpetas.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            archive | tee "$RUNNER_TEMP/build.log"
+
+      - name: Crear IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/export/Payload"
+          cp -R "$RUNNER_TEMP/Carpetas.xcarchive/Products/Applications/Carpetas.app" "$RUNNER_TEMP/export/Payload/"
+          cd "$RUNNER_TEMP/export"
+          zip -qr "$RUNNER_TEMP/Carpetas.ipa" Payload
+
+      - name: Descargar IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Carpetas-iOS
+          path: ${{ runner.temp }}/Carpetas.ipa
+          if-no-files-found: error
+
+      - name: Registro de errores
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Carpetas-build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
